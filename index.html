@@ -3,23 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Business Finder – Click Row to Highlight Pin</title>
+    <title>Business Finder – Sortable Table</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         #map { height: 400px; width: 100%; margin-top: 20px; }
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
         th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-        th { background-color: #f2f2f2; }
+        th { background-color: #f2f2f2; cursor: pointer; } /* Clickable headers */
         .has-phone { color: red; font-weight: bold; }
         tr:hover { background-color: #f0f0f0; cursor: pointer; } /* Visual hover + pointer */
     </style>
 </head>
 <body>
-    <h1>Find Businesses – Click Row for Pin Highlight</h1>
+    <h1>Find Businesses – Sortable Table + Click Row for Pin</h1>
     <p>Drag or move the map – lat/lng inputs auto-update to new center. Then click Search to refresh results.<br>
        Click a table row to highlight its pin on the map (opens popup and centers map). If map is off-screen, it scrolls back up.<br>
-       Filters applied: Excludes benches, waste baskets, bicycle parking, and unnamed places.</p>
+       Click column headers to sort the table (asc/desc toggle). Filters: Excludes benches, waste baskets, bicycle parking, and unnamed places.<br>
+       <strong>Updated: Deduplicates listings based on name, type, phone, and website (case-insensitive).</strong></p>
     
     <label>Latitude: <input type="text" id="lat" value="37.7749"></label><br><br>
     <label>Longitude: <input type="text" id="lng" value="-122.4194"></label><br><br>
@@ -116,9 +117,12 @@
         }
 
         function displayResults(elements) {
-            let html = `<table><tr><th>Name</th><th>Type</th><th>Phone</th><th>Website</th></tr>`;
+            let html = `<table>
+                <thead><tr><th>Name</th><th>Type</th><th>Phone</th><th>Website</th></tr></thead>
+                <tbody>`;
             let count = 0, withPhone = 0;
             markers = []; // Ensure cleared
+            const seen = new Set(); // For deduping
 
             elements.forEach(el => {
                 const lat = el.lat || (el.center?.lat);
@@ -131,8 +135,13 @@
                 // Skip unwanted types or unnamed
                 if (type === 'bench' || type === 'waste_basket' || type === 'bicycle_parking' || name === 'No name') return;
 
-                const phone = el.tags.phone || el.tags["contact:phone"];
-                const website = el.tags.website || el.tags["contact:website"];
+                const phone = el.tags.phone || el.tags["contact:phone"] || '';
+                const website = el.tags.website || el.tags["contact:website"] || '';
+
+                // Dedupe key (case-insensitive)
+                const dedupeKey = `${name.toLowerCase()}|${type.toLowerCase()}|${phone.toLowerCase()}|${website.toLowerCase()}`;
+                if (seen.has(dedupeKey)) return;
+                seen.add(dedupeKey);
 
                 const hasPhone = !!phone;
                 if (hasPhone) withPhone++;
@@ -150,14 +159,13 @@
                 count++;
             });
 
-            html += `</table><p>Found ${count} places – <b style="color:red">${withPhone} have phone numbers</b> (red pin + red text)</p>`;
+            html += `</tbody></table><p>Found ${count} places – <b style="color:red">${withPhone} have phone numbers</b> (red pin + red text)</p>`;
             document.getElementById("results").innerHTML = html || "<p>No places found</p>";
 
-            // Add click events to rows
-            const rows = document.querySelectorAll('#results table tr');
+            // Add click events to rows for map highlight
+            const rows = document.querySelectorAll('#results table tbody tr');
             rows.forEach((row, index) => {
-                if (index === 0) return; // Skip header row
-                const marker = markers[index - 1];
+                const marker = markers[index];
                 row.addEventListener('click', () => {
                     if (marker) {
                         map.panTo(marker.getLatLng()); // Center map on marker
@@ -167,10 +175,49 @@
                     }
                 });
             });
+
+            // Add sorting to column headers
+            const table = document.querySelector('#results table');
+            if (table) {
+                const headers = table.querySelectorAll('th');
+                headers.forEach((header, colIndex) => {
+                    header.addEventListener('click', () => sortTable(table, colIndex));
+                });
+            }
+        }
+
+        function sortTable(table, colIndex) {
+            const tbody = table.tBodies[0];
+            const rows = Array.from(tbody.rows);
+            const header = table.querySelectorAll('th')[colIndex];
+            const dir = header.dataset.sortDir === 'asc' ? 'desc' : 'asc';
+            header.dataset.sortDir = dir;
+
+            // Reset other headers' direction
+            table.querySelectorAll('th').forEach(th => {
+                if (th !== header) th.dataset.sortDir = '';
+            });
+
+            rows.sort((a, b) => {
+                let valA = a.cells[colIndex].textContent.trim();
+                let valB = b.cells[colIndex].textContent.trim();
+
+                // Handle special cases like N/A or Link
+                if (valA === 'N/A' || valA === '–' || valA === 'Link') valA = '';
+                if (valB === 'N/A' || valB === '–' || valB === 'Link') valB = '';
+
+                if (dir === 'asc') {
+                    return valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' });
+                } else {
+                    return valB.localeCompare(valA, undefined, { numeric: true, sensitivity: 'base' });
+                }
+            });
+
+            rows.forEach(row => tbody.appendChild(row));
         }
     </script>
 
-    <p style="margin-top:30px">Save as business-finder.html and open it. Now excludes benches, waste baskets, bicycle parking, and unnamed places!</p>
+    <p style="margin-top:30px">Save as business-finder.html and open it. Now deduplicates entries!</p>
     <p>Next ideas: More filters? Export to CSV? Let me know!</p>
 </body>
 </html>
