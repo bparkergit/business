@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Business Finder – Click Row to Highlight Pin</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #map { height: 400px; width: 100%; margin-top: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .has-phone { color: red; font-weight: bold; }
+        tr:hover { background-color: #f0f0f0; cursor: pointer; } /* Visual hover + pointer */
+    </style>
+</head>
+<body>
+    <h1>Find Businesses – Click Row for Pin Highlight</h1>
+    <p>Drag or move the map – lat/lng inputs auto-update to new center. Then click Search to refresh results.<br>
+       Click a table row to highlight its pin on the map (opens popup and centers map). If map is off-screen, it scrolls back up.<br>
+       Filters applied: Excludes benches, waste baskets, bicycle parking, and unnamed places.</p>
+    
+    <label>Latitude: <input type="text" id="lat" value="37.7749"></label><br><br>
+    <label>Longitude: <input type="text" id="lng" value="-122.4194"></label><br><br>
+    <label>Radius (meters): <input type="text" id="radius" value="1000"></label><br><br>
+    <button onclick="searchBusinesses()">Search Now</button>
+    
+    <div id="map"></div>
+    <div id="results"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        let map;
+        let markers = [];
+        let redIcon;
+        let defaultIcon;
+        let centerMarker;
+        let radiusCircle;
+
+        function initMap(lat, lng) {
+            map = L.map('map').setView([lat, lng], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>'
+            }).addTo(map);
+
+            // Red pin
+            redIcon = L.icon({
+                iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+                shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+                iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
+            });
+
+            // Default blue pin
+            defaultIcon = L.icon({
+                iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+                shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+                iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
+            });
+
+            // Listen for map move/drag/zoom end → update lat/lng inputs
+            map.on('moveend', function() {
+                const center = map.getCenter();
+                document.getElementById('lat').value = center.lat.toFixed(6);
+                document.getElementById('lng').value = center.lng.toFixed(6);
+                // Optional: auto-search on move? Uncomment if wanted: searchBusinesses();
+            });
+        }
+
+        initMap(37.7749, -122.4194);
+
+        function searchBusinesses() {
+            // Clear previous markers, but keep center and circle for now
+            markers.forEach(m => map.removeLayer(m));
+            markers = [];
+            document.getElementById("results").innerHTML = "<p>Loading…</p>";
+
+            const lat = parseFloat(document.getElementById("lat").value);
+            const lng = parseFloat(document.getElementById("lng").value);
+            const radius = parseInt(document.getElementById("radius").value);
+
+            if (isNaN(lat) || isNaN(lng) || isNaN(radius)) return alert("Enter valid numbers please");
+
+            map.setView([lat, lng], map.getZoom()); // Keep current zoom if possible
+
+            // Update or add green center pin
+            if (centerMarker) map.removeLayer(centerMarker);
+            centerMarker = L.marker([lat, lng], {
+                icon: L.icon({
+                    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
+                    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+                    iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
+                })
+            }).addTo(map).bindPopup("Center");
+
+            // Update or add radius circle
+            if (radiusCircle) map.removeLayer(radiusCircle);
+            radiusCircle = L.circle([lat, lng], {radius: radius, color: '#3388ff'}).addTo(map);
+
+            const query = `[out:json][timeout:25];
+            (node(around:${radius},${lat},${lng})[shop];
+             node(around:${radius},${lat},${lng})[amenity];
+             node(around:${radius},${lat},${lng})[office];
+             way(around:${radius},${lat},${lng})[shop];
+             way(around:${radius},${lat},${lng})[amenity];
+             way(around:${radius},${lat},${lng})[office];);
+            out center;`;
+
+            fetch('https://overpass-api.de/api/interpreter', {
+                method: 'POST',
+                body: 'data=' + encodeURIComponent(query)
+            })
+            .then(r => r.json())
+            .then(data => displayResults(data.elements))
+            .catch(() => document.getElementById("results").innerHTML = "<p>Sorry – could not load data</p>");
+        }
+
+        function displayResults(elements) {
+            let html = `<table><tr><th>Name</th><th>Type</th><th>Phone</th><th>Website</th></tr>`;
+            let count = 0, withPhone = 0;
+            markers = []; // Ensure cleared
+
+            elements.forEach(el => {
+                const lat = el.lat || (el.center?.lat);
+                const lon = el.lon || (el.center?.lon);
+                if (!lat || !lon) return;
+
+                const name = el.tags.name || 'No name';
+                const type = el.tags.shop || el.tags.amenity || el.tags.office || '?';
+
+                // Skip unwanted types or unnamed
+                if (type === 'bench' || type === 'waste_basket' || type === 'bicycle_parking' || name === 'No name') return;
+
+                const phone = el.tags.phone || el.tags["contact:phone"];
+                const website = el.tags.website || el.tags["contact:website"];
+
+                const hasPhone = !!phone;
+                if (hasPhone) withPhone++;
+
+                const icon = hasPhone ? redIcon : defaultIcon;
+
+                const marker = L.marker([lat, lon], {icon: icon}).addTo(map)
+                    .bindPopup(`<b>${name}</b><br>${type}<br>Phone: ${phone || '–'}`);
+                markers.push(marker);
+
+                html += `<tr ${hasPhone ? 'class="has-phone"' : ''}>
+                    <td>${name}</td><td>${type}</td><td>${phone || 'N/A'}</td>
+                    <td>${website ? `<a href="${website}" target="_blank">Link</a>` : '–'}</td>
+                </tr>`;
+                count++;
+            });
+
+            html += `</table><p>Found ${count} places – <b style="color:red">${withPhone} have phone numbers</b> (red pin + red text)</p>`;
+            document.getElementById("results").innerHTML = html || "<p>No places found</p>";
+
+            // Add click events to rows
+            const rows = document.querySelectorAll('#results table tr');
+            rows.forEach((row, index) => {
+                if (index === 0) return; // Skip header row
+                const marker = markers[index - 1];
+                row.addEventListener('click', () => {
+                    if (marker) {
+                        map.panTo(marker.getLatLng()); // Center map on marker
+                        marker.openPopup(); // Open popup
+                        // Scroll page to map if off-screen
+                        document.getElementById('map').scrollIntoView({ behavior: 'smooth' });
+                    }
+                });
+            });
+        }
+    </script>
+
+    <p style="margin-top:30px">Save as business-finder.html and open it. Now excludes benches, waste baskets, bicycle parking, and unnamed places!</p>
+    <p>Next ideas: More filters? Export to CSV? Let me know!</p>
+</body>
+</html>
